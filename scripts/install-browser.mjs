@@ -24,8 +24,11 @@ const candidates = [
 const playwrightCli = candidates.find((p) => existsSync(p));
 
 if (!playwrightCli) {
+  // Not fatal: pi installs with --legacy-peer-deps and lifecycle ordering can
+  // vary. The extension also installs deps on first daemon launch.
   console.warn(
-    "⚠ pi-aia-browser: playwright not found — run `npm install` first, then `npx playwright install chromium`.",
+    "⚠ pi-aia-browser: playwright CLI not found yet — Chromium will be installed\n" +
+      "  on first browser use, or run manually: npx playwright install chromium",
   );
   process.exit(0);
 }

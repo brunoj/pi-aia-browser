@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Install failed with `MODULE_NOT_FOUND` on `pi install npm:pi-aia-browser`.** The published tarball's `files` list omitted `scripts/`, but `package.json` declared `"postinstall": "node scripts/install-browser.mjs"`. npm therefore ran a script that did not exist in the package, aborting the install. `scripts/install-browser.mjs` is now included in `files`.
+- **Postinstall no longer aborts the install when Playwright is not resolvable yet.** It now warns and exits successfully; Chromium is installed on first browser use instead.
+
+## [0.1.0] - 2026-08-14
+
 ### Added
 
 - Initial public release of pi-aia-browser (published from the local pi-browser extension).
