@@ -21,6 +21,15 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "not a git repo" >
 git diff --quiet || { echo "working tree dirty — commit or stash first" >&2; exit 1; }
 npm whoami >/dev/null 2>&1 || { echo "not logged in to npm — run 'npm login' first" >&2; exit 1; }
 
+# Gate the release on the full suite. A release script that publishes whatever
+# is in the tree is how a broken artifact reaches users — and this package
+# already has one packaging bug in its history (0.1.0 shipped a broken `files`
+# allowlist), so "it worked for me locally" is not evidence.
+echo "▶ running the full test suite before releasing..."
+npm test
+echo "▶ typechecking..."
+npm run check
+
 OLD_VERSION=$(node -p "require('./package.json').version")
 NEW_VERSION=$(npm version "$LEVEL" --no-git-tag-version)
 
@@ -53,5 +62,5 @@ npm publish
 echo ""
 echo "✅ Released $OLD_VERSION → $NEW_VERSION"
 echo "   Tag:   $NEW_VERSION"
-echo "   npm:   npm:pi-vigilant@$NEW_VERSION"
+echo "   npm:   npm:pi-aia-browser@$NEW_VERSION"
 echo "   NOTE:  Update CHANGELOG.md's '### Added' section if needed, then commit."

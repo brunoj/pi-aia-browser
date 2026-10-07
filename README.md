@@ -40,7 +40,9 @@ Then restart pi or run `/reload`.
 | `browser_back` / `browser_forward` | History navigation |
 | `browser_reload` | Reload page |
 | `browser_cookies` | Get/set/clear cookies |
-| `browser_diagnose` | Daemon health, memory, page state |
+| `browser_console` | **Page console: console.log/warn/error, uncaught JS errors, failed requests** |
+| `browser_logs` | **Daemon-side log (startup, crashes, recoveries, RPC errors)** |
+| `browser_diagnose` | Daemon health, memory, page state, console summary |
 | `browser_close` | Shut down the daemon |
 
 ## How it works
@@ -48,7 +50,7 @@ Then restart pi or run `/reload`.
 - **Client extension** (`index.ts`) — registers the tools, communicates with the daemon over a Unix socket (`~/.pi/run/aia-browser.sock`), auto-spawns the daemon on first use.
 - **Daemon** (`src/daemon.ts`) — persistent Playwright process that survives pi restarts; manages browser contexts, tabs, profiles, screenshots, and auto-shuts down after 60 min idle.
 - **Profiles** — saved sessions in `~/.pi/browser/profiles` (login persistence, e.g. LinkedIn).
-- **Logs** — `~/.pi/agent/logs/pi-aia-browser/daemon.log`.
+- **Logs** — `~/.pi/agent/logs/pi-aia-browser/daemon.log`. Read them without leaving the agent: `browser_logs` for daemon-side events (supports `level` and `grep` filters) and `browser_console` for what the page itself said — `console.log/warn/error`, uncaught exceptions, and failed network requests, captured per tab with no setup. `browser_diagnose` shows the tallies and the log file path. This matters because a page that renders fine in a screenshot can still be broken: the error is only in the console.
 
 ## Use cases
 

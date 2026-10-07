@@ -13,7 +13,7 @@ import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { connect as connectSocket, type Socket } from "node:net";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdir, access, readFile, writeFile } from "node:fs/promises";
+import { mkdir, access, readFile, writeFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir, tmpdir } from "node:os";
@@ -292,7 +292,6 @@ async function spawnDaemon(ctx?: ExtensionCommandContext) {
       : "which tsx 2>/dev/null || npx --yes tsx --version 2>/dev/null && which tsx";
     const which = execSync(cmd, {
       stdio: "pipe",
-      shell: true,
       timeout: 5000,
     }).toString().trim().split(/\r?\n/)[0];
     if (which) tsxPaths.unshift(which);
@@ -428,7 +427,9 @@ async function rpcCall(method: string, params?: any): Promise<any> {
 
 async function listProfiles(): Promise<string[]> {
   try {
-    const entries = await readFile(PROFILES_DIR, { withFileTypes: true }).catch(() => []);
+    // readdir, not readFile — readFile on a directory throws EISDIR, which the
+    // .catch below swallowed, so this silently always returned [].
+    const entries = await readdir(PROFILES_DIR, { withFileTypes: true }).catch(() => []);
     const items = Array.isArray(entries) ? entries : [];
     return items
       .filter((e: any) => e.isDirectory?.())
@@ -495,7 +496,6 @@ export default function (pi: ExtensionAPI) {
       ),
       timeout: Type.Optional(Type.Number({ description: "Navigation timeout in ms (default: 30000)" })),
     }),
-    required: ["url"],
     async execute(_id: string, params: any) {
       const result = await rpcCall("navigate", params);
       return {
@@ -543,7 +543,6 @@ export default function (pi: ExtensionAPI) {
       clear: Type.Optional(Type.Boolean({ description: "Clear existing value first (default: false)" })),
       submit: Type.Optional(Type.Boolean({ description: "Press Enter after typing (default: false)" })),
     }),
-    required: ["value"],
     async execute(_id: string, params: any) {
       const result = await rpcCall("type", params);
       return {
@@ -625,7 +624,6 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({
       script: Type.String({ description: "JavaScript code to execute in the page context" }),
     }),
-    required: ["script"],
     async execute(_id: string, params: any) {
       const result = await rpcCall("js", params);
       if (result.error) {
@@ -684,7 +682,6 @@ export default function (pi: ExtensionAPI) {
       timeout: Type.Optional(Type.Integer({ description: "Timeout in ms (default: 5000)" })),
       script: Type.Optional(Type.String({ description: "JS function body that returns truthy (for 'function' type)" })),
     }),
-    required: ["type"],
     async execute(_id: string, params: any) {
       const result = await rpcCall("wait", params);
       return {
@@ -705,7 +702,6 @@ export default function (pi: ExtensionAPI) {
       tabId: Type.Optional(Type.String({ description: "Tab ID (for switch/close)" })),
       url: Type.Optional(Type.String({ description: "URL to open (for create)" })),
     }),
-    required: ["action"],
     async execute(_id: string, params: any) {
       const result = await rpcCall("tabs", params);
       if (params.action === "list") {
@@ -782,7 +778,6 @@ export default function (pi: ExtensionAPI) {
       action: StringEnum(["get", "set", "clear"] as const),
       cookies: Type.Optional(Type.Array(Type.Any(), { description: "Cookies to set (for 'set' action)" })),
     }),
-    required: ["action"],
     async execute(_id: string, params: any) {
       const result = await rpcCall("cookies", params);
       if (params.action === "get") {
@@ -805,12 +800,114 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "browser_diagnose",
     label: "Browser Diagnose",
-    description: "Diagnose the browser daemon status. Returns detailed health info including memory, page state, and configuration.",
+    description:
+      "Diagnose the browser daemon status. Returns detailed health info including memory, page state, configuration, " +
+      "a consoleSummary (how many console errors/warnings/failed requests each check has seen) and the daemon log file path. " +
+      "For the entries behind those counts use browser_console; for daemon-side events use browser_logs.",
     parameters: Type.Object({}),
     async execute() {
       const result = await rpcCall("diagnose");
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+        details: result,
+      };
+    },
+  });
+
+  // ── browser_console ──
+  pi.registerTool({
+    name: "browser_console",
+    label: "Browser Console",
+    description:
+      "Read the page's console output: console.log/info/warn/error/debug, uncaught page errors, and failed network requests. " +
+      "Captured continuously by the daemon for every tab — no setup needed. " +
+      "Use this during browser testing to check for JS errors instead of guessing from a screenshot. " +
+      "Defaults to the active tab; pass pageId to read another tab (including a recently closed one).",
+    promptSnippet: "Read the browser page's console output and JS errors",
+    parameters: Type.Object({
+      level: Type.Optional(
+        StringEnum(["all", "error", "warning", "info", "log", "debug", "network"] as const),
+      ),
+      limit: Type.Optional(Type.Integer({ description: "Max entries to return (default 100, max 500)" })),
+      since: Type.Optional(Type.Integer({ description: "Only entries at/after this epoch-ms timestamp" })),
+      pageId: Type.Optional(Type.String({ description: "Tab id (default: active tab)" })),
+    }),
+    async execute(_id: string, params: any) {
+      const result = await rpcCall("console_logs", params ?? {});
+      const entries: any[] = result.entries ?? [];
+      if (entries.length === 0) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `No console entries${params?.level && params.level !== "all" ? ` for level=${params.level}` : ""} on tab ${result.pageId}${result.pageUrl ? ` (${result.pageUrl})` : ""}.`,
+            },
+          ],
+          details: result,
+        };
+      }
+      const lines = entries.map((e) => {
+        const ts = new Date(e.t).toISOString();
+        return `[${ts}] ${e.type}: ${e.text}`;
+      });
+      const header =
+        `Console for tab ${result.pageId}${result.pageUrl ? ` (${result.pageUrl})` : ""} — ` +
+        `${result.returned} of ${result.matched} matching (${result.total} captured total)` +
+        `${result.truncated ? ", older entries omitted" : ""}:`;
+      return {
+        content: [{ type: "text" as const, text: `${header}\n${lines.join("\n")}` }],
+        details: result,
+      };
+    },
+  });
+
+  // ── browser_logs ──
+  pi.registerTool({
+    name: "browser_logs",
+    label: "Browser Logs",
+    description:
+      "Read the browser daemon's own activity log: navigations, timeouts, RPC errors, page recreations, health-check recoveries. " +
+      "Use this when a browser action misbehaves or hangs and you need to know what the daemon actually did. " +
+      "Filter by level (info/warn/error) or grep for a substring.",
+    promptSnippet: "Read the browser daemon's activity log",
+    parameters: Type.Object({
+      level: Type.Optional(
+        StringEnum(["all", "info", "warn", "error", "fatal"] as const),
+      ),
+      limit: Type.Optional(Type.Integer({ description: "Max entries to return (default 50, max 1000)" })),
+      grep: Type.Optional(Type.String({ description: "Case-insensitive substring filter on the log line" })),
+    }),
+    async execute(_id: string, params: any) {
+      const result = await rpcCall("daemon_logs", params ?? {});
+      const entries: any[] = result.entries ?? [];
+      if (!result.exists) {
+        return {
+          content: [{ type: "text" as const, text: `Daemon log not found at ${result.logFile}` }],
+          details: result,
+        };
+      }
+      if (entries.length === 0) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `No daemon log entries${params?.level && params.level !== "all" ? ` for level=${params.level}` : ""}${params?.grep ? ` matching "${params.grep}"` : ""}.`,
+            },
+          ],
+          details: result,
+        };
+      }
+      const lines = entries.map((e) => {
+        const data = e.data ? ` ${JSON.stringify(e.data)}` : "";
+        return `[${e.t}] ${e.level.toUpperCase()}: ${e.msg}${data}`;
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Daemon log (${result.logFile}) — last ${result.returned} matching entries:\n${lines.join("\n")}`,
+          },
+        ],
         details: result,
       };
     },

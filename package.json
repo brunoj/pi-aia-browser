@@ -1,7 +1,7 @@
 {
   "name": "pi-aia-browser",
   "version": "0.1.1",
-  "description": "Full browser automation for pi — persistent Playwright daemon, multi-tab, screenshots, JS injection, user profiles, cookies. Installs Chromium automatically on install.",
+  "description": "Full browser automation for pi \u2014 persistent Playwright daemon, multi-tab, screenshots, JS injection, user profiles, cookies. Installs Chromium automatically on install.",
   "keywords": [
     "pi-package",
     "browser",
@@ -33,11 +33,14 @@
   ],
   "scripts": {
     "clean": "echo 'nothing to clean'",
-    "build": "echo 'nothing to build — pi loads .ts via jiti at runtime'",
-    "check": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck --allowImportingTsExtensions --noCheck index.ts",
-    "test": "echo 'see https://github.com/brunoj/pi-aia-browser for test suites'",
+    "build": "echo 'nothing to build \u2014 pi loads .ts via jiti at runtime'",
+    "check": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck --allowImportingTsExtensions index.ts src/daemon.ts",
+    "test": "bash test/run-all.sh",
     "postinstall": "node scripts/install-browser.mjs",
-    "release": "./scripts/release.sh"
+    "release": "./scripts/release.sh",
+    "test:core": "node test/test-browser-core.mjs",
+    "test:diag": "node test/test-diagnostics.mjs",
+    "test:client": "node test/test-client.mjs"
   },
   "pi": {
     "extensions": [
@@ -68,10 +71,11 @@
     }
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "0.83.0",
-    "@earendil-works/pi-ai": "0.83.0",
-    "@earendil-works/pi-coding-agent": "0.83.0",
-    "typebox": "1.1.38",
-    "typescript": "5.9.3"
+    "@earendil-works/pi-agent-core": "^1.0.4",
+    "@earendil-works/pi-ai": "^1.0.4",
+    "@earendil-works/pi-coding-agent": "^1.0.4",
+    "typebox": "^1.3.36",
+    "typescript": "5.9.3",
+    "tsx": "^4.23.1"
   }
 }

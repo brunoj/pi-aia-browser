@@ -8,7 +8,7 @@
 
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { createServer, type Socket } from "node:net";
-import { mkdir, unlink, access, writeFile, appendFile } from "node:fs/promises";
+import { mkdir, unlink, access, writeFile, appendFile, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
@@ -33,6 +33,17 @@ const DEFAULT_IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes (was 30 — too ag
 const NAVIGATION_TIMEOUT_MS = 60000; // 60s (was 30 — too short for heavy SPAs)
 const MAX_TABS = 10;
 const BLANK_PAGE_THRESHOLD = 3; // consecutive blank page detections before recovery
+const HEALTH_CHECK_THROTTLE_MS = 30000; // min gap between health checks
+// Config overridable (config.healthCheckIntervalMs / config.blankPageThreshold)
+// — mainly so tests can exercise the health check without waiting 30s a cycle.
+function healthCheckThrottleMs(): number {
+  const v = config?.healthCheckIntervalMs;
+  return typeof v === "number" && v >= 0 ? v : HEALTH_CHECK_THROTTLE_MS;
+}
+function blankPageThreshold(): number {
+  const v = config?.blankPageThreshold;
+  return typeof v === "number" && v > 0 ? v : BLANK_PAGE_THRESHOLD;
+}
 
 // ─── State ────────────────────────────────────────────────────────────────
 
@@ -46,8 +57,131 @@ let startupTime = Date.now();
 let config: any = {};
 let consecutiveBlankPages = 0;
 let lastHealthCheck = Date.now();
+// Guards against concurrent initBrowser() calls (client browser_init racing
+// the daemon's own autoInit) launching two Chromium processes.
+let initPromise: Promise<void> | null = null;
+
+// ─── Per-page diagnostics (console + page errors + failed requests) ───────
+// Bounded ring buffers so a chatty page can't grow memory unboundedly.
+// Keyed by pageId; entries persist briefly after a page closes/recreates so
+// the agent can still ask "what just happened" right after a crash/recreate.
+
+const CONSOLE_BUFFER_MAX = 500;
+const DIAGNOSTICS_RETENTION_MS = 10 * 60 * 1000; // keep closed-page buffers 10 min
+
+interface ConsoleEntry {
+  t: number;
+  type: string; // console message type: log, error, warning, info, debug...
+  text: string;
+  pageId: string;
+}
+
+const consoleBuffers = new Map<string, ConsoleEntry[]>(); // pageId -> entries
+const bufferRetiredAt = new Map<string, number>(); // pageId -> close timestamp (for GC)
+
+function pushConsoleEntry(pageId: string, entry: ConsoleEntry) {
+  let buf = consoleBuffers.get(pageId);
+  if (!buf) {
+    buf = [];
+    consoleBuffers.set(pageId, buf);
+  }
+  buf.push(entry);
+  if (buf.length > CONSOLE_BUFFER_MAX) buf.splice(0, buf.length - CONSOLE_BUFFER_MAX);
+}
+
+function gcConsoleBuffers() {
+  const now = Date.now();
+  for (const [pageId, retiredAt] of bufferRetiredAt) {
+    if (!pages.has(pageId) && now - retiredAt > DIAGNOSTICS_RETENTION_MS) {
+      consoleBuffers.delete(pageId);
+      bufferRetiredAt.delete(pageId);
+    }
+  }
+}
+
+/**
+ * Attach the full diagnostic listener set (close, pageerror, console,
+ * requestfailed) to a newly created page. MUST be called at every page
+ * creation site — missing this silently drops console/pageerror capture
+ * for that page (this was a real bug: the "tabs create" RPC and the
+ * navigation-recovery path each had their own hand-rolled subset).
+ */
+function attachPageListeners(page: Page, pageId: string) {
+  page.on("close", () => {
+    // Capture order BEFORE deleting so we can focus the *adjacent* tab.
+    // The old code used getPageIds()[0], which threw the user back to the
+    // oldest tab ever created — surprising, and it silently changed which
+    // document subsequent calls acted on.
+    const order = Array.from(pages.keys());
+    const idx = order.indexOf(pageId);
+    pages.delete(pageId);
+    bufferRetiredAt.set(pageId, Date.now());
+    if (activePageId === pageId) {
+      const remaining = order.filter((id) => id !== pageId);
+      activePageId = remaining.length > 0
+        ? remaining[Math.max(0, Math.min(idx, remaining.length - 1))]
+        : null;
+    }
+  });
+
+  page.on("pageerror", (err) => {
+    log("error", "page-error", { pageId, error: err.message });
+    pushConsoleEntry(pageId, { t: Date.now(), type: "pageerror", text: err.message, pageId });
+  });
+
+  page.on("console", (msg) => {
+    const type = msg.type();
+    pushConsoleEntry(pageId, { t: Date.now(), type, text: msg.text(), pageId });
+    if (type === "error") {
+      log("warn", "console-error", { pageId, text: msg.text() });
+    }
+  });
+
+  page.on("requestfailed", (req) => {
+    const failure = req.failure();
+    pushConsoleEntry(pageId, {
+      t: Date.now(),
+      type: "requestfailed",
+      text: `${req.method()} ${req.url()} — ${failure?.errorText ?? "unknown error"}`,
+      pageId,
+    });
+  });
+}
 
 // ─── Logging ──────────────────────────────────────────────────────────────
+
+/**
+ * Read the tail of the daemon's own log file so the agent can inspect what
+ * the daemon actually did (timeouts, RPC errors, health-check recoveries)
+ * without knowing where the file lives or shelling out to tail/grep.
+ */
+async function tailDaemonLog(
+  maxLines: number,
+  level?: string,
+  grep?: string,
+): Promise<Array<{ t: string; level: string; msg: string; data?: any }>> {
+  let raw: string;
+  try {
+    raw = await readFile(LOG_FILE, "utf-8");
+  } catch {
+    return [];
+  }
+  const lines = raw.split("\n").filter((l) => l.trim().length > 0);
+  const tail = lines.slice(-Math.max(maxLines, 1));
+  const out: Array<{ t: string; level: string; msg: string; data?: any }> = [];
+  for (const line of tail) {
+    let entry: any;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (level && level !== "all" && entry.level !== level) continue;
+    if (grep && !line.toLowerCase().includes(grep.toLowerCase())) continue;
+    out.push(entry);
+  }
+  return out;
+}
 
 async function log(level: string, msg: string, data?: any) {
   const line = JSON.stringify({
@@ -126,6 +260,26 @@ async function isBlankPage(page: Page): Promise<boolean> {
   }
 }
 
+/**
+ * A page sitting on about:blank / chrome-error:// is NOT a corrupted page —
+ * it is the expected state of an idle tab or of a navigation that failed for
+ * a legitimate reason (server down, blocked URL, offline).
+ *
+ * Without this guard the health check recreated the page every 30s forever
+ * (1,218 recreations / 6,116 log lines observed on one long-lived daemon),
+ * which also threw away the page's diagnostic state and re-registered
+ * listeners on a brand-new page each time.
+ */
+function isIntentionallyBlank(page: Page): boolean {
+  let url = "";
+  try {
+    url = page.url();
+  } catch {
+    return false;
+  }
+  return url === "" || url === "about:blank" || url.startsWith("chrome-error://");
+}
+
 async function recreateActivePage() {
   if (!browser) return;
   
@@ -140,15 +294,7 @@ async function recreateActivePage() {
     pages.set(pageId, newPage);
     activePageId = pageId;
 
-    newPage.on("close", () => {
-      pages.delete(pageId);
-      if (activePageId === pageId) {
-        activePageId = getPageIds()[0] ?? null;
-      }
-    });
-    newPage.on("pageerror", (err) => {
-      log("error", "page-error", { pageId, error: err.message });
-    });
+    attachPageListeners(newPage, pageId);
 
     // Close old page
     if (oldPage && oldPageId) {
@@ -166,7 +312,7 @@ async function recreateActivePage() {
 
 async function performHealthCheck() {
   const now = Date.now();
-  if (now - lastHealthCheck < 30000) return; // max once per 30s
+  if (now - lastHealthCheck < healthCheckThrottleMs()) return; // throttled
   lastHealthCheck = now;
 
   try {
@@ -184,26 +330,23 @@ async function performHealthCheck() {
       const pageId = generatePageId();
       pages.set(pageId, newPage);
       activePageId = pageId;
-      newPage.on("close", () => {
-        pages.delete(pageId);
-        if (activePageId === pageId) activePageId = getPageIds()[0] ?? null;
-      });
-      newPage.on("pageerror", (err) => {
-        log("error", "page-error", { pageId, error: err.message });
-      });
+      attachPageListeners(newPage, pageId);
       await log("info", "health-check-recreated-closed-page", { pageId });
       return;
     }
 
     // Check if page is blank
     const blank = await isBlankPage(page);
-    if (blank) {
+    if (blank && isIntentionallyBlank(page)) {
+      // Idle tab or failed-but-legitimate navigation — leave it alone.
+      consecutiveBlankPages = 0;
+    } else if (blank) {
       consecutiveBlankPages++;
       await log("warn", "health-check-blank-page", {
         consecutive: consecutiveBlankPages,
         url: page.url(),
       });
-      if (consecutiveBlankPages >= BLANK_PAGE_THRESHOLD) {
+      if (consecutiveBlankPages >= blankPageThreshold()) {
         await log("warn", "health-check-recovering-blank-page", {});
         await recreateActivePage();
         consecutiveBlankPages = 0;
@@ -236,10 +379,22 @@ async function performHealthCheck() {
 async function initBrowser(profileName?: string) {
   if (browser) {
     await log("warn", "init-browser-already-running");
+    // Startup sets `browser` before the initial page exists, so a caller that
+    // arrives mid-startup must still wait for the page — otherwise `init`
+    // returns { ok: true, pageId: null } and the very next call fails with
+    // "No active page" (this raced the client's browser_init against autoInit).
+    if (initPromise) {
+      try { await initPromise; } catch {}
+    }
     return;
   }
-
-  const viewport = config.defaultViewport ?? { width: 1280, height: 800 };
+  if (initPromise) {
+    // Another init is in flight — join it rather than launching a second browser.
+    try { await initPromise; } catch {}
+    return;
+  }
+  initPromise = (async () => {
+    const viewport = config.defaultViewport ?? { width: 1280, height: 800 };
   // Auto-detect headless mode:
   // - Windows: headful (headless Chromium has GPU/compositing issues)
   // - Linux/macOS: headful if DISPLAY/WAYLAND_DISPLAY is set, headless otherwise
@@ -309,18 +464,18 @@ async function initBrowser(profileName?: string) {
   pages.set(pageId, page);
   activePageId = pageId;
 
-  page.on("close", () => {
-    pages.delete(pageId);
-    if (activePageId === pageId) {
-      activePageId = getPageIds()[0] ?? null;
-    }
-  });
-
-  page.on("pageerror", (err) => {
-    log("error", "page-error", { pageId, error: err.message });
-  });
+  attachPageListeners(page, pageId);
 
   await log("info", "initial-page-created", { pageId });
+  })();
+
+  try {
+    await initPromise;
+  } catch (err) {
+    // Let a later init retry instead of caching a permanently rejected promise.
+    initPromise = null;
+    throw err;
+  }
 }
 
 async function shutdown() {
@@ -378,7 +533,7 @@ async function handleRPC(method: string, params: any): Promise<any> {
 
     // ── Navigation ──
     case "navigate": {
-      const page = getActivePage();
+      let page = getActivePage();
       if (!page) throw rpcError("no-active-page", "No active page. Call init first.");
       const url = params.url;
       if (!url) throw rpcError("missing-url", "URL is required");
@@ -405,6 +560,10 @@ async function handleRPC(method: string, params: any): Promise<any> {
           // Page is truly stuck — recreate it
           await log("warn", "navigation-recovery-failed-recreating-page", { url });
           await recreateActivePage();
+          // recreateActivePage() replaces the active page — the old `page`
+          // handle is closed and unusable. Re-fetch it or every later call in
+          // this handler would operate on a dead page.
+          page = getActivePage() ?? page;
           response = await page.goto(url, { waitUntil: "domcontentloaded", timeout });
         }
       }
@@ -416,9 +575,9 @@ async function handleRPC(method: string, params: any): Promise<any> {
         await log("warn", "blank-page-detected", {
           url,
           consecutive: consecutiveBlankPages,
-          threshold: BLANK_PAGE_THRESHOLD,
+          threshold: blankPageThreshold(),
         });
-        if (consecutiveBlankPages >= BLANK_PAGE_THRESHOLD) {
+        if (consecutiveBlankPages >= blankPageThreshold()) {
           await log("warn", "blank-page-threshold-reached-recovering", { url });
           // First try navigating to feed to re-establish session context
           try {
@@ -430,6 +589,7 @@ async function handleRPC(method: string, params: any): Promise<any> {
             // Feed navigation also failed — recreate the page
             await log("warn", "blank-page-feed-recovery-failed-recreating-page", { url });
             await recreateActivePage();
+            page = getActivePage() ?? page;
             try {
               response = await page.goto(url, { waitUntil: "domcontentloaded", timeout });
             } catch {}
@@ -745,16 +905,28 @@ async function handleRPC(method: string, params: any): Promise<any> {
       const action = params.action ?? "list";
 
       switch (action) {
-        case "list":
-          return {
-            pages: Array.from(pages.entries()).map(([id, p]) => ({
-              id,
-              url: p.url(),
-              title: p.url() ? "..." : "(new tab)",
-              active: id === activePageId,
-            })),
-            activePageId,
-          };
+        case "list": {
+          // Real titles. The previous implementation returned the literal
+          // string "..." for every tab (`p.url() ? "..." : "(new tab)"`),
+          // so the agent was shown placeholder data it could mistake for a
+          // real page title.
+          const entries = await Promise.all(
+            Array.from(pages.entries()).map(async ([id, p]) => {
+              let title = "";
+              try {
+                title = p.isClosed() ? "" : await p.title();
+              } catch {}
+              return {
+                id,
+                url: p.url(),
+                title,
+                active: id === activePageId,
+                closed: p.isClosed(),
+              };
+            }),
+          );
+          return { pages: entries, activePageId };
+        }
 
         case "switch":
           if (!params.tabId) throw rpcError("missing-tabId", "tabId required");
@@ -771,10 +943,7 @@ async function handleRPC(method: string, params: any): Promise<any> {
           pages.set(pageId, newPage);
           activePageId = pageId;
 
-          newPage.on("close", () => {
-            pages.delete(pageId);
-            if (activePageId === pageId) activePageId = getPageIds()[0] ?? null;
-          });
+          attachPageListeners(newPage, pageId);
 
           if (params.url) {
             await newPage.goto(params.url, { waitUntil: "domcontentloaded", timeout: NAVIGATION_TIMEOUT_MS });
@@ -855,8 +1024,9 @@ async function handleRPC(method: string, params: any): Promise<any> {
       const page = getActivePage();
       if (!page) throw rpcError("no-active-page", "No active page.");
       const timeout = params?.timeout ?? NAVIGATION_TIMEOUT_MS;
+      let response;
       try {
-        await page.reload({ timeout });
+        response = await page.reload({ timeout });
       } catch (err: any) {
         await log("warn", "reload-timeout-recovering", { timeout, error: err.message });
         try {
@@ -865,11 +1035,18 @@ async function handleRPC(method: string, params: any): Promise<any> {
           await recreateActivePage();
           const newPage = getActivePage();
           if (newPage) {
-            await newPage.goto(page.url() || "about:blank", { waitUntil: "domcontentloaded", timeout });
+            response = await newPage.goto(page.url() || "about:blank", { waitUntil: "domcontentloaded", timeout });
           }
         }
       }
-      return { url: page.url(), title: await page.title() };
+      // Report status like navigate does — a reload that came back 500 should
+      // not look identical to a clean one.
+      return {
+        url: page.url(),
+        title: await page.title(),
+        status: response?.status() ?? null,
+        ok: response ? response.ok() : null,
+      };
     }
 
     case "diagnose": {
@@ -887,6 +1064,22 @@ async function handleRPC(method: string, params: any): Promise<any> {
           pageInfo = { error: e.message };
         }
       }
+      // Console health summary for the active page, so an agent calling
+      // diagnose already sees "there were 3 console errors here" without
+      // having to know to ask for them separately.
+      let consoleSummary = null;
+      if (activePageId) {
+        const buf = consoleBuffers.get(activePageId) ?? [];
+        const counts: Record<string, number> = {};
+        for (const e of buf) counts[e.type] = (counts[e.type] ?? 0) + 1;
+        consoleSummary = {
+          total: buf.length,
+          errors: (counts["error"] ?? 0) + (counts["pageerror"] ?? 0),
+          warnings: counts["warning"] ?? 0,
+          requestFailed: counts["requestfailed"] ?? 0,
+          byType: counts,
+        };
+      }
       return {
         pid: process.pid,
         uptime: Date.now() - startupTime,
@@ -895,13 +1088,78 @@ async function handleRPC(method: string, params: any): Promise<any> {
         pagesCount: pages.size,
         activePageId,
         pageInfo,
+        consoleSummary,
         screenshotDir: SCREENSHOT_DIR,
         screenshotDirExists: existsSync(SCREENSHOT_DIR),
         socketPath: SOCKET_PATH,
         socketExists: existsSync(SOCKET_PATH),
+        logFile: LOG_FILE,
         memoryUsage: process.memoryUsage(),
         consecutiveBlankPages,
         lastHealthCheck,
+      };
+    }
+
+    // ── Diagnostics: force a health check ──
+    // The periodic check is throttled and runs off RPC traffic, so "did the
+    // health check notice this?" is otherwise only answerable by waiting.
+    // This also gives tests a deterministic hook.
+    case "health_check": {
+      await performHealthCheck();
+      const p = getActivePage();
+      return {
+        ran: true,
+        activePageId,
+        url: p ? p.url() : null,
+        isBlank: p ? await isBlankPage(p).catch(() => null) : null,
+        isIntentionallyBlank: p ? isIntentionallyBlank(p) : null,
+        consecutiveBlankPages,
+        recreations: (await tailDaemonLog(1000, undefined, "page-recreated")).length,
+      };
+    }
+
+    // ── Diagnostics: page console ──
+    case "console_logs": {
+      gcConsoleBuffers();
+      const pageId = params?.pageId ?? activePageId;
+      if (!pageId) throw rpcError("no-active-page", "No active page. Call init first.");
+      const buf = consoleBuffers.get(pageId) ?? [];
+      const level = params?.level as string | undefined;
+      const since = typeof params?.since === "number" ? params.since : 0;
+      const limit = Math.min(Math.max(params?.limit ?? 100, 1), CONSOLE_BUFFER_MAX);
+
+      const filtered = buf.filter((e) => {
+        if (e.t < since) return false;
+        if (!level || level === "all") return true;
+        if (level === "error") return e.type === "error" || e.type === "pageerror";
+        if (level === "warning") return e.type === "warning";
+        if (level === "network") return e.type === "requestfailed";
+        return e.type === level;
+      });
+
+      const tail = filtered.slice(-limit);
+      return {
+        pageId,
+        pageUrl: pages.get(pageId) ? pages.get(pageId)!.url() : null,
+        total: buf.length,
+        matched: filtered.length,
+        returned: tail.length,
+        truncated: filtered.length > tail.length,
+        entries: tail,
+      };
+    }
+
+    // ── Diagnostics: daemon activity log ──
+    case "daemon_logs": {
+      const limit = Math.min(Math.max(params?.limit ?? 50, 1), 1000);
+      const level = params?.level as string | undefined;
+      const grep = params?.grep as string | undefined;
+      const tail = await tailDaemonLog(limit * 4, level, grep);
+      return {
+        logFile: LOG_FILE,
+        exists: existsSync(LOG_FILE),
+        returned: tail.length,
+        entries: tail.slice(-limit),
       };
     }
 
