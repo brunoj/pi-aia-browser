@@ -143,6 +143,41 @@ await withTempPiDir(async (piDir) => {
     const initRes = await tools.get("browser_init").execute("t1", {});
     const initText = initRes.content.map((c) => c.text).join("\n");
     check("browser_init reports success", /running|ready|already/i.test(initText) || initRes.details?.ok !== false, initText);
+    check(
+      "browser_init reports an active tab (not 'Active tab: none')",
+      !/Active tab:\s*none/.test(initText),
+      initText,
+    );
+
+    // ─────────────────────────────────────────────────────────────────────
+    section("2b. browser_init must CREATE a tab when the daemon has none");
+    // ─────────────────────────────────────────────────────────────────────
+    // ensureDaemon() only connects; the old browser_init then just pinged, so
+    // against a daemon with no page it cheerfully reported "running" with
+    // "Pages: 0 / Active tab: none" and left the agent with nothing to act on.
+    // Use the connected daemon itself (the client bound its socket path at
+    // import, so a second temp-dir daemon would not be reachable from here).
+    {
+      const before = await daemon.call("tabs", { action: "list" });
+      for (const t of before.pages) {
+        try { await daemon.call("tabs", { action: "close", tabId: t.id }); } catch {}
+      }
+      const empty = await daemon.call("ping");
+      check("setup: connected daemon genuinely has no page", empty.pages === 0 && !empty.activePage, JSON.stringify(empty));
+
+      const r = await tools.get("browser_init").execute("t1b", {});
+      const text = r.content.map((c) => c.text).join("\n");
+      const post = await daemon.call("ping");
+      check("browser_init opened a tab on a page-less daemon", post.pages > 0 && !!post.activePage, JSON.stringify(post));
+      check("and says so instead of reporting 'none'", !/Active tab:\s*none/.test(text), text);
+
+      // and the tab it created is actually usable
+      const usable = await tools.get("browser_navigate")
+        .execute("t1c", { url: `${fixture.origin}/`, waitUntil: "load" })
+        .then((x) => x.content.map((c) => c.text).join("\n"))
+        .catch(() => null);
+      check("the tab browser_init created is usable", !!usable && /Browser Fixture/.test(usable), String(usable).slice(0, 120));
+    }
 
     // ─────────────────────────────────────────────────────────────────────
     section("3. navigate / dom / js through the real tool surface");

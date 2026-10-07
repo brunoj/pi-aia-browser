@@ -466,7 +466,7 @@ export default function (pi: ExtensionAPI) {
         Type.String({ description: "Browser profile name (optional). Use 'default' for ephemeral." }),
       ),
     }),
-    async execute() {
+    async execute(_id: string, params: any) {
       const ok = await ensureDaemon();
       if (!ok) {
         return {
@@ -475,7 +475,28 @@ export default function (pi: ExtensionAPI) {
           isError: true,
         };
       }
+      // ensureDaemon() only connects — it never asked the daemon for a page.
+      // So browser_init could report "running" with Pages: 0 / Active tab:
+      // none and leave the agent with no tab to act on. init is idempotent and
+      // waits for the initial page, so call it and report what we actually got.
+      let init: any = {};
+      try {
+        init = await rpcCall("init", params?.profile ? { profile: params.profile } : {});
+      } catch (err: any) {
+        return {
+          content: [{ type: "text" as const, text: `Browser daemon is running but failed to open a tab: ${err.message}` }],
+          details: { error: err.message },
+          isError: true,
+        };
+      }
       const status = await rpcCall("ping");
+      if (!status.activePage) {
+        return {
+          content: [{ type: "text" as const, text: `Browser daemon is running but has no tab. Try browser_tabs {action:"create"}.\nUptime: ${Math.round(status.uptime / 1000)}s\nPages: ${status.pages}` }],
+          details: status,
+          isError: true,
+        };
+      }
       return {
         content: [{ type: "text" as const, text: `Browser daemon is running.\nPID: ${status.pong ? "active" : "unknown"}\nUptime: ${Math.round(status.uptime / 1000)}s\nPages: ${status.pages}\nActive tab: ${status.activePage ?? "none"}` }],
         details: status,

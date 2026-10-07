@@ -106,6 +106,24 @@ function gcConsoleBuffers() {
  * for that page (this was a real bug: the "tabs create" RPC and the
  * navigation-recovery path each had their own hand-rolled subset).
  */
+/**
+ * Open a tab and wire it up. Every page-creation path must go through here:
+ * the four hand-rolled copies of this code are how `tabs create` ended up
+ * with no pageerror listener while the other paths had one.
+ *
+ * `context` is null exactly when a persistent profile (--user-data-dir) was
+ * used, which is why the branch reads from `browser` in that case.
+ */
+async function createPage(): Promise<{ page: Page; pageId: string }> {
+  if (!browser && !context) throw rpcError("not-initialized", "Browser is not launched. Call init first.");
+  const page = context ? await context.newPage() : await browser!.newPage();
+  const pageId = generatePageId();
+  pages.set(pageId, page);
+  activePageId = pageId;
+  attachPageListeners(page, pageId);
+  return { page, pageId };
+}
+
 function attachPageListeners(page: Page, pageId: string) {
   page.on("close", () => {
     // Capture order BEFORE deleting so we can focus the *adjacent* tab.
@@ -287,14 +305,7 @@ async function recreateActivePage() {
   const oldPage = oldPageId ? pages.get(oldPageId) : null;
   
   try {
-    const newPage = context
-      ? await context.newPage()
-      : await browser.newPage();
-    const pageId = generatePageId();
-    pages.set(pageId, newPage);
-    activePageId = pageId;
-
-    attachPageListeners(newPage, pageId);
+    const { pageId } = await createPage();
 
     // Close old page
     if (oldPage && oldPageId) {
@@ -324,13 +335,7 @@ async function performHealthCheck() {
       pages.delete(activePageId!);
       activePageId = null;
       // Create a new page
-      const newPage = context
-        ? await context.newPage()
-        : await browser!.newPage();
-      const pageId = generatePageId();
-      pages.set(pageId, newPage);
-      activePageId = pageId;
-      attachPageListeners(newPage, pageId);
+      const { pageId } = await createPage();
       await log("info", "health-check-recreated-closed-page", { pageId });
       return;
     }
@@ -385,6 +390,14 @@ async function initBrowser(profileName?: string) {
     // "No active page" (this raced the client's browser_init against autoInit).
     if (initPromise) {
       try { await initPromise; } catch {}
+    }
+    // "Browser exists" is not the same as "there is a tab to use". After an
+    // idle shutdown, or after every tab was closed, the browser was alive with
+    // zero pages and init still reported success — leaving the agent with
+    // nothing to act on. Guarantee a tab.
+    if (getPageIds().length === 0 || !getActivePage()) {
+      const { pageId } = await createPage();
+      await log("info", "init-created-missing-page", { pageId });
     }
     return;
   }
@@ -456,17 +469,8 @@ async function initBrowser(profileName?: string) {
   });
 
   // Create initial page
-  const page = userDataDir
-    ? await browser.newPage()
-    : await (context!).newPage();
-
-  const pageId = generatePageId();
-  pages.set(pageId, page);
-  activePageId = pageId;
-
-  attachPageListeners(page, pageId);
-
-  await log("info", "initial-page-created", { pageId });
+  await createPage();
+  await log("info", "initial-page-created", { pageId: activePageId });
   })();
 
   try {
@@ -936,14 +940,7 @@ async function handleRPC(method: string, params: any): Promise<any> {
 
         case "create": {
           if (pages.size >= MAX_TABS) throw rpcError("max-tabs", `Maximum ${MAX_TABS} tabs reached`);
-          const newPage = context
-            ? await context.newPage()
-            : await browser!.newPage();
-          const pageId = generatePageId();
-          pages.set(pageId, newPage);
-          activePageId = pageId;
-
-          attachPageListeners(newPage, pageId);
+          const { page: newPage, pageId } = await createPage();
 
           if (params.url) {
             await newPage.goto(params.url, { waitUntil: "domcontentloaded", timeout: NAVIGATION_TIMEOUT_MS });

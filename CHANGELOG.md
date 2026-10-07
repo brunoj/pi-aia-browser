@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`browser_init` could report success with no tab to use.** It only pinged the daemon — it never
+  asked for a page — and `initBrowser()` treated "a browser object exists" as ready. After an idle
+  shutdown, or once every tab had been closed, it returned `Pages: 0 / Active tab: none` while
+  claiming the daemon was running, and the next call failed with `no-active-page`. `browser_init`
+  now calls `init`, and `init` guarantees a tab.
+- **Page creation was copy-pasted across four sites.** Extracted a single `createPage()` helper; this
+  is the same duplication that let `tabs create` miss its listeners (below).
 - **Page console output was never captured at all.** There was no `page.on("console")` handler
   anywhere in the daemon, so `console.log/warn/error` from a page reached neither the agent nor the
   log file. A page that looked fine in a screenshot could be entirely broken with nothing to show it.
