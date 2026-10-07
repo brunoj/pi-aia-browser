@@ -1,7 +1,7 @@
 {
   "name": "pi-aia-browser",
-  "version": "0.1.1",
-  "description": "Full browser automation for pi \u2014 persistent Playwright daemon, multi-tab, screenshots, JS injection, user profiles, cookies. Installs Chromium automatically on install.",
+  "version": "0.2.0",
+  "description": "Full browser automation for pi — persistent Playwright daemon, multi-tab, screenshots, JS injection, user profiles, cookies. Installs Chromium automatically on install.",
   "keywords": [
     "pi-package",
     "browser",
@@ -33,7 +33,7 @@
   ],
   "scripts": {
     "clean": "echo 'nothing to clean'",
-    "build": "echo 'nothing to build \u2014 pi loads .ts via jiti at runtime'",
+    "build": "echo 'nothing to build — pi loads .ts via jiti at runtime'",
     "check": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck --allowImportingTsExtensions index.ts src/daemon.ts",
     "test": "bash test/run-all.sh",
     "postinstall": "node scripts/install-browser.mjs",
