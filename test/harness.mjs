@@ -29,7 +29,7 @@ export const DAEMON_SCRIPT = join(REPO_ROOT, "src", "daemon.ts");
  * local node_modules, global npm root, `which tsx`, then the npx cache.
  * Hardcoding one path breaks the moment the npx cache is cleared.
  */
-function resolveTsxLoader() {
+export function resolveTsxLoader() {
   const candidates = [];
   candidates.push(join(REPO_ROOT, "node_modules", ".bin", "tsx"));
   candidates.push(join(REPO_ROOT, "node_modules", "tsx", "dist", "loader.mjs"));

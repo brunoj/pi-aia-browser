@@ -8,6 +8,7 @@ suites=(
   test-browser-core.mjs
   test-diagnostics.mjs
   test-client.mjs
+  test-screenshot-dir.mjs
 )
 
 fail=0

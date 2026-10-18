@@ -12,6 +12,7 @@ import { mkdir, unlink, access, writeFile, appendFile, readFile } from "node:fs/
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
+import { resolveScreenshotDir } from "./screenshot-dir.ts";
 
 // ─── Config ───────────────────────────────────────────────────────────────
 
@@ -24,8 +25,7 @@ const SOCKET_PATH = isWin
   : join(RUN_DIR, "aia-browser.sock");
 const LOG_DIR = join(PI_DIR, "agent", "logs", "pi-aia-browser");
 const LOG_FILE = join(LOG_DIR, "daemon.log");
-const SCREENSHOT_DIR = process.env.PI_AIA_BROWSER_SCREENSHOT_DIR
-  || (isWin ? join(PI_DIR, "browser", "screenshots") : "/tmp/pi-aia-browser-screenshots");
+const SCREENSHOT_DIR = resolveScreenshotDir();
 const CONFIG_PATH = join(PI_DIR, "browser", "config.json");
 const PROFILES_DIR = join(PI_DIR, "browser", "profiles");
 

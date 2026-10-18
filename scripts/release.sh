@@ -59,6 +59,52 @@ git push --follow-tags
 git push origin "$NEW_VERSION"
 npm publish
 
+# Gate: the publish actually landed. `npm publish` exits 0 when npm ACCEPTS the
+# upload, but npm can hold a version in its staging queue and serve the packument
+# before the tarball exists — so a release nobody could install printed the same
+# success banner as a real one (this happened to pi-vigilant 0.8.0: `npm install
+# pi-aia-browser@<v>` failed with ETARGET while the script said ✅). A tag and a
+# commit are not a release, so poll the registry for the version itself.
+echo "── gate: publish landed ─────────────────────────────────────"
+PKG_NAME=$(node -p "require('./package.json').name")
+node - "$PKG_NAME" "${NEW_VERSION#v}" <<'EOF' || exit 1
+const [name, version] = process.argv.slice(2);
+const tarball = `https://registry.npmjs.org/${encodeURIComponent(name)}/-/${name}-${version}.tgz`;
+const url = `https://registry.npmjs.org/${encodeURIComponent(name)}?t=${Date.now()}`;
+const landed = async () => {
+  try {
+    const res = await fetch(url, { headers: { "Cache-Control": "no-cache" } });
+    if (!res.ok) return false;
+    const doc = await res.json();
+    if (!doc.versions?.[version]) return false;
+    // The metadata listing the version is not enough — the tarball has to be
+    // fetchable, which is exactly what an install needs.
+    const t = await fetch(tarball, { method: "HEAD" });
+    return t.ok;
+  } catch {
+    return false;
+  }
+};
+const DEADLINE = Date.now() + 240_000;
+(async () => {
+  while (Date.now() < DEADLINE) {
+    if (await landed()) {
+      console.log(`published: ${name}@${version} is installable from the registry`);
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 5_000));
+  }
+  console.error(
+    `release INCOMPLETE: ${name}@${version} is not installable after 4 minutes.\n` +
+      `npm most likely holds it in its staging queue (security review), or rejected it.\n` +
+      `The git tag exists but nobody can install this version — check\n` +
+      `https://www.npmjs.com/package/${name} and the security-holds page, then\n` +
+      `re-publish (a still-staged version cannot be re-published: it 409s).`,
+  );
+  process.exit(1);
+})();
+EOF
+
 echo ""
 echo "✅ Released $OLD_VERSION → $NEW_VERSION"
 echo "   Tag:   $NEW_VERSION"

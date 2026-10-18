@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-18
+
+### Fixed
+
+- **Screenshots no longer die with `EACCES` on a shared machine.** The Unix screenshot
+  directory was the fixed path `/tmp/pi-aia-browser-screenshots`. `/tmp` is world
+  writable, so the first user to create that directory owns it — and every other user's
+  daemon passed `mkdir({ recursive: true })` (an existing directory satisfies it, and
+  reports nothing wrong) and then failed on the first screenshot when the file was
+  actually opened. The failure surfaced far from its cause and took the whole client
+  suite down: on this box the directory belonged to another account (`infra`, mode 775)
+  and `test-client.mjs` could not pass at all.
+  - The default is now per-user — `/tmp/pi-aia-browser-screenshots-<uid>` — created
+    `0700`, so it cannot be pre-empted by another account or used as a squatting/symlink
+    target.
+  - If even that candidate is not writable, the daemon falls back to a private `mkdtemp`
+    directory (and then to `~/.pi/browser/screenshots`) and keeps working, instead of
+    accepting a directory it cannot write into and failing later.
+  - `PI_AIA_BROWSER_SCREENSHOT_DIR` still overrides verbatim.
+  - Extracted to `src/screenshot-dir.ts` so it is testable without booting Playwright.
+
+### Tests
+
+- **`test/test-screenshot-dir.mjs` — 15 checks**, covering the per-user default, its `0700`
+  mode, the operator override, the no-`getuid` path, and the hostile case: the candidate
+  directory exists but is not writable. The fixture asserts it is genuinely unwritable,
+  so the section cannot pass vacuously, and the check that matters is that a file can
+  actually be written to the returned path — the call that used to throw. Verified as a
+  real guard: with the legacy fixed-name behaviour restored, 8 of the 15 fail; with the
+  fix, 15/15.
+- Suite now runs 4 suites / 179 checks, all green; `npm run check` clean.
+
+### Tools
+
+- **`scripts/release.sh` now verifies the publish landed.** `npm publish` exits 0 when npm
+  merely *accepts* the upload, and npm can hold a version in its staging queue with the
+  packument listing it while the tarball 404s — the same failure that made pi-vigilant 0.8.0
+  print "✅ Released" while `npm install` failed with `ETARGET`. The script now polls the
+  registry until the version is genuinely installable (metadata **and** a fetchable
+  tarball) and exits non-zero if it never becomes so. A tag and a commit are not a release.
+
 ## [0.2.0] - 2026-10-07
 
 ### Added
