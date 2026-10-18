@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-18
+
+### Fixed
+
+- **`logSync()` never wrote a single line — the daemon log was silently empty.**
+  `src/daemon.ts` called `require("fs").appendFileSync(...)` inside an empty
+  `try/catch`. The daemon runs under the tsx ESM loader, where `require` is not
+  defined, so every call threw `require is not defined` and the catch swallowed
+  it. The result: `daemon-started`, `uncaught-exception`, `unhandled-rejection`
+  and `daemon-crash` were never recorded, so a daemon that had crashed left no
+  trace of ever having started or crashed — the exact situation the crash logging
+  exists for. `appendFileSync` is now imported from `node:fs` and called directly.
+  - **Negative control:** restoring `require("fs")` makes `test/test-packaging.mjs`
+    fail (17 passed, 2 failed); with the fix it is 19 passed, 0 failed. The check
+    is therefore capable of failing, which is what makes the green run evidence.
+
+### Tests
+
+- **Clean-room verification is now committed, not a scratch claim.** `test/test-packaging.mjs`
+  section 5 runs `npm pack`, installs the tarball into a fresh prefix with
+  `--ignore-scripts`, boots the *installed* `src/daemon.ts` under an isolated
+  `PI_CODING_AGENT_DIR`, and asserts the daemon opens its socket, answers `ping`,
+  and writes its log under its own `PI_CODING_AGENT_DIR` — including the
+  `daemon-started` line that 0.2.2 could never produce.
+
 ## [0.2.2] - 2026-10-18
 
 ### Fixed
