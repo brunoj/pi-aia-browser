@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-18
+
+### Fixed
+
+- **`files` shipped `src/daemon.ts` by name, so 0.2.1 was published broken.** When
+  `src/daemon.ts` gained `import "./screenshot-dir.ts"`, nothing complained: typecheck reads
+  the working tree, the suite runs from the working tree, and `npm publish` succeeded — but
+  the packed artifact had no `src/screenshot-dir.ts`, so the daemon could not start on any
+  machine that installed 0.2.1. A whitelist that has to be updated for every new file fails
+  silently, and only a clean-room install could see it. `files` now ships `src/` as a
+  directory.
+  - **0.2.1 is deprecated on npm** (`missing src/screenshot-dir.ts — the daemon cannot
+    start`); install 0.2.2 or later.
+
+### Tests
+
+- **`test/test-packaging.mjs` — 10 checks** that inspect the artifact npm would actually
+  publish (`npm pack --dry-run --json`) rather than the working tree: the entry points ship,
+  **every relative import in a shipped file resolves to a file that also ships**, `src/` is
+  shipped as a directory rather than enumerated per file, and the module that broke 0.2.1 is
+  present. Verified as a real guard: with the old enumerated `files` list restored, 4 checks
+  fail naming `./screenshot-dir.ts`; with the fix, 10/10.
+- Suite now runs 5 suites / 189 checks, all green; `npm run check` clean.
+
+### Tools
+
+- `scripts/release.sh` gained the publish-landed gate (ported from pi-vigilant, where the
+  phantom release was first seen): it polls the registry until the version is genuinely
+  installable — packument **and** a fetchable tarball — and exits non-zero otherwise. It ran
+  immediately on 0.2.1, caught npm holding the version in its staging queue, and refused to
+  print the success banner.
+
 ## [0.2.1] - 2026-10-18
 
 ### Fixed

@@ -25,7 +25,7 @@
   },
   "files": [
     "index.ts",
-    "src/daemon.ts",
+    "src/",
     "scripts/install-browser.mjs",
     "README.md",
     "LICENSE",

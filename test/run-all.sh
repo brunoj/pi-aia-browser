@@ -9,6 +9,7 @@ suites=(
   test-diagnostics.mjs
   test-client.mjs
   test-screenshot-dir.mjs
+  test-packaging.mjs
 )
 
 fail=0
