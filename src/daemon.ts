@@ -9,7 +9,7 @@
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { createServer, type Socket } from "node:net";
 import { mkdir, unlink, access, writeFile, appendFile, readFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, appendFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { resolveScreenshotDir } from "./screenshot-dir.ts";
@@ -224,7 +224,11 @@ function logSync(level: string, msg: string, data?: any) {
     ...(data ? { data } : {}),
   }) + "\n";
   try {
-    require("fs").appendFileSync(LOG_FILE, line);
+    // ESM under the tsx loader has no `require` — this used to call
+    // require("fs").appendFileSync and the empty catch below swallowed
+    // "require is not defined", so daemon-started / uncaught-exception /
+    // daemon-crash were never recorded at all. Use the ESM import.
+    appendFileSync(LOG_FILE, line);
   } catch {}
 }
 
