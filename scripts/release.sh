@@ -105,6 +105,20 @@ const DEADLINE = Date.now() + 240_000;
 })();
 EOF
 
+# Gate: the PUBLISHED artifact, not the local tree. Every other gate in this
+# script reads the working tree, which is exactly how 0.2.1 shipped a tarball
+# missing src/screenshot-dir.ts with a green suite. This one installs the version
+# from the registry into a throwaway prefix, boots the installed daemon under its
+# own PI_CODING_AGENT_DIR and requires it to answer ping AND to have written its
+# startup line — the logSync bug that 0.2.3 fixes is invisible to every local test.
+if [ "${BMX_SKIP_PUBLISHED_VERIFY:-}" != "1" ]; then
+  echo "── gate: published artifact verified ─────────────────────────"
+  node scripts/verify-published.mjs "${NEW_VERSION#v}" || {
+    echo "release INCOMPLETE: ${NEW_VERSION} is on the registry but the installed artifact does not work" >&2
+    exit 1
+  }
+fi
+
 echo ""
 echo "✅ Released $OLD_VERSION → $NEW_VERSION"
 echo "   Tag:   $NEW_VERSION"

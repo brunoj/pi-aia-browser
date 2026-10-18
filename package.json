@@ -40,7 +40,8 @@
     "release": "./scripts/release.sh",
     "test:core": "node test/test-browser-core.mjs",
     "test:diag": "node test/test-diagnostics.mjs",
-    "test:client": "node test/test-client.mjs"
+    "test:client": "node test/test-client.mjs",
+    "verify:published": "node scripts/verify-published.mjs"
   },
   "pi": {
     "extensions": [
