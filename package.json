@@ -1,6 +1,6 @@
 {
   "name": "pi-aia-browser",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Full browser automation for pi — persistent Playwright daemon, multi-tab, screenshots, JS injection, user profiles, cookies. Installs Chromium automatically on install.",
   "keywords": [
     "pi-package",
