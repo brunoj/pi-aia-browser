@@ -85,7 +85,11 @@ const landed = async () => {
     return false;
   }
 };
-const DEADLINE = Date.now() + 240_000;
+// npm routinely holds a fresh publish in its staging queue for several minutes
+// before the tarball is installable. A 240s window called two real releases
+// "INCOMPLETE" while the version was in fact live minutes later, so the window has
+// to be wider than npm's usual staging delay.
+const DEADLINE = Date.now() + 480_000;
 (async () => {
   while (Date.now() < DEADLINE) {
     if (await landed()) {
