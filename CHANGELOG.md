@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.4] - 2026-11-04
 
+### Fixed
+
+- **`browser_diagnose` is now listed to the model.** pi omits a custom tool from the
+  system prompt's Available tools section when it has no `promptSnippet`. Seventeen of the
+  eighteen tools had one; `browser_diagnose` did not, so the model was never told it exists
+  (it stayed callable by name only).
+
+### Changed
+
+- The pi peers are pinned to 1.5.0, the version that actually loads this extension.
+- `jiti` is declared as a devDependency; the harness imported it without declaring it.
+
+### Added
+
+- `scripts/verify-published.mjs` polls for the tarball instead of trusting a single HEAD
+  request, which 404s transiently while a fresh release sits in npm's staging queue.
+
+## [0.2.4] - 2026-11-04
+
 ### Added
 
 - (describe changes for 0.2.4)
