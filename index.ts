@@ -825,6 +825,7 @@ export default function (pi: ExtensionAPI) {
       "Diagnose the browser daemon status. Returns detailed health info including memory, page state, configuration, " +
       "a consoleSummary (how many console errors/warnings/failed requests each check has seen) and the daemon log file path. " +
       "For the entries behind those counts use browser_console; for daemon-side events use browser_logs.",
+    promptSnippet: "Diagnose the browser daemon: health, console counts, log path",
     parameters: Type.Object({}),
     async execute() {
       const result = await rpcCall("diagnose");
